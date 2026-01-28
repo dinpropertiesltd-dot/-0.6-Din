@@ -9,7 +9,9 @@ import {
   CheckCircle, 
   ShieldCheck, 
   UserCircle,
-  AlertCircle
+  AlertCircle,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 interface ProfileProps {
@@ -21,6 +23,7 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdate }) => {
   const [name, setName] = useState(user.name);
   const [phone, setPhone] = useState(user.phone || '');
   const [password, setPassword] = useState(user.password || 'password123');
+  const [showPassword, setShowPassword] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
   const [isError, setIsError] = useState(false);
 
@@ -152,11 +155,18 @@ const Profile: React.FC<ProfileProps> = ({ user, onUpdate }) => {
                     </label>
                     <div className="relative">
                       <input 
-                        type="password"
-                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-sm font-bold outline-none focus:ring-8 focus:ring-slate-900/5 transition-all"
+                        type={showPassword ? "text" : "password"}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-2xl pl-6 pr-12 py-4 text-sm font-bold outline-none focus:ring-8 focus:ring-slate-900/5 transition-all"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                       />
+                      <button 
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
                     </div>
                     <p className="text-[9px] text-slate-400 font-bold px-1 italic">Use a strong alphanumeric string for maximum security.</p>
                   </div>
