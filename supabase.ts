@@ -37,10 +37,7 @@ const mapToUI = (f: any): PropertyFile => ({
   park: f.park || '-',
   corner: f.corner || '-',
   mainBoulevard: f.main_boulevard || '-',
-  transactions: Array.isArray(f.transactions) ? f.transactions : [],
-  uploadedStatementUrl: f.uploaded_statement_url,
-  uploadedStatementName: f.uploaded_statement_name,
-  lastNotified: f.last_notified
+  transactions: Array.isArray(f.transactions) ? f.transactions : []
 });
 
 /**
@@ -69,38 +66,21 @@ const mapToDB = (f: PropertyFile): any => ({
   currency_no: f.currencyNo,
   surcharge: f.surcharge || 0,
   overdue: f.overdue || 0,
-  transactions: f.transactions || [],
-  last_notified: f.lastNotified
+  transactions: f.transactions || []
+  // 'last_notified' removed to prevent schema mismatch errors if column doesn't exist
 });
 
-/**
- * PRODUCTION AUTH HELPERS
- */
 export const authProvider = {
   signUp: async (email: string, password: string, metadata: any) => {
-    return await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: metadata
-      }
-    });
+    return await supabase.auth.signUp({ email, password, options: { data: metadata } });
   },
 
   signIn: async (email: string, password: string) => {
-    return await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    return await supabase.auth.signInWithPassword({ email, password });
   },
 
   sendLoginChallenge: async (email: string) => {
-    return await supabase.auth.signInWithOtp({
-      email: email,
-      options: {
-        shouldCreateUser: false, 
-      },
-    });
+    return await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
   },
 
   resetPasswordForEmail: async (email: string) => {
@@ -108,84 +88,45 @@ export const authProvider = {
   },
 
   verifyResetOTP: async (email: string, token: string) => {
-    return await supabase.auth.verifyOtp({
-      email,
-      token,
-      type: 'recovery',
-    });
+    return await supabase.auth.verifyOtp({ email, token, type: 'recovery' });
   },
 
   updatePassword: async (password: string) => {
-    return await supabase.auth.updateUser({
-      password: password
-    });
+    return await supabase.auth.updateUser({ password });
   },
 
   verifyOTP: async (email: string, token: string, type: 'email' | 'signup' | 'recovery' = 'email') => {
-    const { data, error } = await supabase.auth.verifyOtp({
-      email,
-      token,
-      type: type, 
-    });
-    
-    return { data, error };
+    return await supabase.auth.verifyOtp({ email, token, type });
   },
 
   upsertProfile: async (profile: any) => {
-    if (profile.cnic) {
-      profile.cnic_normalized = normalizeCNIC(profile.cnic);
-    }
-    return await supabase
-      .from('profiles')
-      .upsert(profile, { onConflict: 'id' });
+    if (profile.cnic) profile.cnic_normalized = normalizeCNIC(profile.cnic);
+    return await supabase.from('profiles').upsert(profile, { onConflict: 'id' });
   },
 
   getProfile: async (id: string) => {
-    return await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', id)
-      .single();
+    return await supabase.from('profiles').select('*').eq('id', id).single();
   },
 
-  /**
-   * Checks if either the CNIC or Email is already registered in the profiles table.
-   */
   checkIdentityExists: async (cnic: string, email: string) => {
     const norm = normalizeCNIC(cnic);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('email, cnic, cnic_normalized')
-      .or(`cnic_normalized.eq.${norm},email.eq.${email.toLowerCase()}`)
-      .maybeSingle();
-    return { data, error };
+    return await supabase.from('profiles').select('email, cnic, cnic_normalized').or(`cnic_normalized.eq.${norm},email.eq.${email.toLowerCase()}`).maybeSingle();
   },
 
   checkCnicExists: async (cnic: string) => {
     const norm = normalizeCNIC(cnic);
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('email')
-      .eq('cnic_normalized', norm)
-      .maybeSingle();
-    return { data, error };
+    return await supabase.from('profiles').select('email').eq('cnic_normalized', norm).maybeSingle();
   },
 
   fetchUserFiles: async (cnic: string) => {
     const norm = normalizeCNIC(cnic);
-    const { data: files, error } = await supabase
-      .from('property_files')
-      .select('*')
-      .eq('owner_cnic_normalized', norm);
-
+    const { data: files, error } = await supabase.from('property_files').select('*').eq('owner_cnic_normalized', norm);
     if (error || !files) return { data: [], error };
     return { data: files.map(mapToUI), error: null };
   },
 
   fetchAllFiles: async () => {
-    const { data, error } = await supabase
-      .from('property_files')
-      .select('*');
+    const { data, error } = await supabase.from('property_files').select('*');
     if (error || !data) return { data: [], error };
     return { data: data.map(mapToUI), error: null };
   },
@@ -193,31 +134,30 @@ export const authProvider = {
   bulkSyncToCloud: async (files: PropertyFile[]) => {
     const dbFiles = files.map(mapToDB);
     const BATCH_SIZE = 50;
-    for (let i = 0; i < dbFiles.length; i += BATCH_SIZE) {
-      const batch = dbFiles.slice(i, i + BATCH_SIZE);
-      const { error } = await supabase
-        .from('property_files')
-        .upsert(batch, { onConflict: 'file_no' });
-      
-      if (error) {
-        console.error("Batch Sync Error:", error);
-        throw error;
+    
+    try {
+      for (let i = 0; i < dbFiles.length; i += BATCH_SIZE) {
+        const batch = dbFiles.slice(i, i + BATCH_SIZE);
+        const { error } = await supabase.from('property_files').upsert(batch, { onConflict: 'file_no' });
+        if (error) return { success: false, error: error.message, details: error.details };
       }
+      return { success: true };
+    } catch (e: any) {
+      return { success: false, error: e.message };
     }
-    return { success: true };
   },
 
   updateLastNotified: async (fileNo: string, timestamp: string) => {
-    return await supabase
-      .from('property_files')
-      .update({ last_notified: timestamp })
-      .eq('file_no', fileNo);
+    // Graceful no-op if column is missing, wrapped in try/catch
+    try {
+      return await supabase.from('property_files').update({ last_notified: timestamp }).eq('file_no', fileNo);
+    } catch (e) {
+      console.warn("last_notified column missing in schema. Notification history not saved.");
+      return { error: e };
+    }
   },
 
-  signOut: async () => {
-    await supabase.auth.signOut();
-  },
-
+  signOut: async () => { await supabase.auth.signOut(); },
   getSession: async () => {
     const { data: { session } } = await supabase.auth.getSession();
     return session;

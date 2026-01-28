@@ -15,7 +15,8 @@ import {
   Info,
   CheckCircle2,
   CloudLightning,
-  Loader2
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 
 interface AdminPortalProps {
@@ -55,15 +56,20 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
   }, [allFiles, users]);
 
   const parseCSVLine = (line: string): string[] => {
-    const columns: string[] = [];
-    let cur = "", inQ = false;
-    for (const char of line) {
-      if (char === '"') inQ = !inQ;
-      else if (char === ',' && !inQ) { columns.push(cur.trim()); cur = ""; }
-      else cur += char;
+    const result: string[] = [];
+    let cell = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') { cell += '"'; i++; } else { inQuotes = !inQuotes; }
+      } else if (char === ',' && !inQuotes) {
+        result.push(cell.trim());
+        cell = '';
+      } else { cell += char; }
     }
-    columns.push(cur.trim());
-    return columns;
+    result.push(cell.trim());
+    return result;
   };
 
   const handleMasterSync = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -78,7 +84,7 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
       try {
         const text = (event.target?.result as string).replace(/^\uFEFF/, '');
         const lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
-        if (lines.length < 2) throw new Error("Format Error: Empty or invalid file.");
+        if (lines.length < 2) throw new Error("Registry Error: File is empty or lacks headers.");
 
         const rawHeaders = parseCSVLine(lines[0]);
         const normH = rawHeaders.map(h => h.trim().toLowerCase());
@@ -128,16 +134,16 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
           if (!fileMap.has(itemCode)) {
             fileMap.set(itemCode, {
               fileNo: itemCode,
-              currencyNo: col(cols, ['currencyno', 'currency', 'u_currno']) || '-',
-              plotSize: col(cols, ['dscription', 'description', 'size', 'plot_size']) || 'Plot',
+              currencyNo: col(cols, ['currencyno', 'currency', 'u_currno', 'currencyno']) || '-',
+              plotSize: col(cols, ['dscription', 'description', 'size', 'plot_size', 'plot_type']) || 'Plot',
               plotValue: parseVal(col(cols, ['doctotal', 'value', 'price', 'total_value'])),
               balance: 0, receivable: 0, totalReceivable: 0, paymentReceived: 0, surcharge: 0, overdue: 0,
               ownerName: userMap.get(normCNIC)?.name || col(cols, ['oname', 'ownername']) || 'Unknown', 
               ownerCNIC: rawCNIC,
               fatherName: col(cols, ['ofatname', 'fathername', 'so_do_wo', 'father_name']) || '-',
               cellNo: col(cols, ['ocell', 'cellno', 'cell_no', 'phone']) || '-',
-              regDate: col(cols, ['otrfdate', 'regdate', 'date', 'reg_date']) || '-',
-              address: col(cols, ['opraddress', 'address']) || '-',
+              regDate: col(cols, ['otrdate', 'otrfdate', 'regdate', 'date', 'reg_date']) || '-',
+              address: col(cols, ['opraddres', 'opraddress', 'address']) || '-',
               plotNo: col(cols, ['plot', 'plotno', 'u_plotno', 'plot_no']) || '-',
               block: col(cols, ['block', 'u_block', 'sector']) || '-',
               park: col(cols, ['park', 'u_park', 'category']) || '-',
@@ -175,22 +181,22 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
         const filesArray = Array.from(fileMap.values());
         const usersArray = Array.from(userMap.values());
 
-        // Phase 2: Sync to Supabase
-        setSyncPhase('SYNCING');
-        await authProvider.bulkSyncToCloud(filesArray);
+        if (filesArray.length === 0) throw new Error("Registry Error: No valid property records identified. Check CSV headers.");
 
-        if (onImportFullDatabase) {
-          onImportFullDatabase({ 
-            users: usersArray, 
-            files: filesArray 
-          }, true);
+        setSyncPhase('SYNCING');
+        const syncResult = await authProvider.bulkSyncToCloud(filesArray);
+        
+        if (!syncResult.success) {
+           throw new Error(syncResult.error || "Database rejection. Verify RLS policies and table schema.");
         }
+
+        if (onImportFullDatabase) onImportFullDatabase({ users: usersArray, files: filesArray }, true);
         setImportSummary({ assets: fileMap.size, rows: processedRows });
         setSyncPhase('IDLE');
-        alert("Cloud Synchronization Complete. All data is now live in Supabase.");
-      } catch (err) { 
-        console.error(err);
-        alert(`Cloud Sync Failed: ${err instanceof Error ? err.message : 'Check format.'}`); 
+        alert("Cloud Synchronization Complete.");
+      } catch (err: any) { 
+        console.error("Master Sync Failure:", err);
+        alert(`Registry Sync Interrupted: ${err.message || "Unknown error"}\n\nHint: Verify your Supabase schema and CSV headers (otrdate, opraddres, etc.)`); 
       }
       finally { setIsProcessing(false); setSyncPhase('IDLE'); }
     };
@@ -228,22 +234,11 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
                 </div>
               </div>
               <div className="flex flex-col sm:flex-row items-center gap-4 w-full lg:w-auto">
-                <button 
-                  onClick={() => masterSyncRef.current?.click()} 
-                  disabled={isProcessing}
-                  className="w-full sm:w-auto bg-white text-indigo-900 px-12 py-5 rounded-[2rem] font-black text-xs uppercase tracking-[0.2em] shadow-2xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-4 disabled:opacity-50"
-                >
+                <button onClick={() => masterSyncRef.current?.click()} disabled={isProcessing} className="w-full sm:w-auto bg-white text-indigo-900 px-12 py-5 rounded-[2rem] font-black text-xs uppercase tracking-[0.2em] shadow-2xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center gap-4 disabled:opacity-50">
                   {isProcessing ? <Loader2 className="animate-spin" /> : <Database size={20} />}
                   {isLocalDataPinned ? 'Update All Records' : 'Sync Excel to Cloud'}
                 </button>
-                {isLocalDataPinned && (
-                  <button 
-                    onClick={onResetDatabase}
-                    className="w-full sm:w-auto px-8 py-5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-[2rem] font-black text-xs uppercase tracking-[0.2em] transition-all"
-                  >
-                    Reset View
-                  </button>
-                )}
+                {isLocalDataPinned && <button onClick={onResetDatabase} className="w-full sm:w-auto px-8 py-5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-[2rem] font-black text-xs uppercase tracking-[0.2em] transition-all">Reset View</button>}
               </div>
               <input ref={masterSyncRef} type="file" className="hidden" accept=".csv" onChange={handleMasterSync} />
             </div>
@@ -252,11 +247,11 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
               <div className="mt-8 pt-8 border-t border-white/10 flex items-center gap-8 animate-in slide-in-from-top-4">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 size={16} className="text-emerald-400" />
-                  <span className="text-xs font-black uppercase tracking-widest">{importSummary.assets} Assets Synced to Cloud</span>
+                  <span className="text-xs font-black uppercase tracking-widest">{importSummary.assets} Assets Synced</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <FileText size={16} className="text-blue-400" />
-                  <span className="text-xs font-black uppercase tracking-widest">{importSummary.rows} Ledger Entries Processed</span>
+                  <span className="text-xs font-black uppercase tracking-widest">{importSummary.rows} Rows Processed</span>
                 </div>
               </div>
             )}
@@ -268,7 +263,7 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
                 <h4 className="text-3xl font-black text-slate-900">{stats.count} Assets</h4>
              </div>
              <div className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-sm">
-                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2"><Users size={14} /> Registered Members</p>
+                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2"><Users size={14} /> Members</p>
                 <h4 className="text-3xl font-black text-slate-900">{stats.users} Entities</h4>
              </div>
              <div className="bg-white p-10 rounded-[2.5rem] border border-slate-100 shadow-sm">
@@ -285,22 +280,17 @@ const AdminPortal: React.FC<AdminPortalProps> = ({
       
       {activeTab === 'SYSTEM' && (
         <div className="bg-white rounded-[3.5rem] p-12 border border-slate-100 shadow-2xl space-y-12">
-           <div>
-              <h3 className="text-2xl font-black uppercase text-slate-900">Registry Maintenance</h3>
-              <p className="text-slate-500 font-medium mt-1">Terminal-level data management and cloud verification.</p>
-           </div>
-           
+           <div><h3 className="text-2xl font-black uppercase text-slate-900">Registry Maintenance</h3><p className="text-slate-500 font-medium mt-1">Terminal-level data management and cloud verification.</p></div>
            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div className="p-10 bg-slate-50 rounded-[2.5rem] border border-slate-200">
                  <h4 className="text-sm font-black uppercase tracking-widest text-slate-900 mb-4">Reset View</h4>
-                 <p className="text-[11px] text-slate-500 font-medium leading-relaxed mb-8">This clears your current session view and re-fetches the latest state from Supabase.</p>
-                 <button onClick={onResetDatabase} className="w-full bg-slate-900 hover:bg-black text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-slate-900/20 transition-all flex items-center justify-center gap-3"><RefreshCw size={16} /> Re-fetch from Cloud</button>
+                 <p className="text-[11px] text-slate-500 font-medium leading-relaxed mb-8">Clears session view and re-fetches state from Supabase.</p>
+                 <button onClick={onResetDatabase} className="w-full bg-slate-900 hover:bg-black text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl transition-all flex items-center justify-center gap-3"><RefreshCw size={16} /> Re-fetch Cloud</button>
               </div>
-
               <div className="p-10 bg-indigo-50 rounded-[2.5rem] border border-indigo-100">
-                 <h4 className="text-sm font-black uppercase tracking-widest text-indigo-900 mb-4">Supabase Node Status</h4>
-                 <p className="text-[11px] text-indigo-700 font-medium leading-relaxed mb-8">Check connection health to the cloud database.</p>
-                 <button onClick={() => window.location.reload()} className="w-full bg-indigo-900 hover:bg-black text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-indigo-900/20 transition-all flex items-center justify-center gap-3"><ShieldCheck size={16} /> Connection Verified</button>
+                 <h4 className="text-sm font-black uppercase tracking-widest text-indigo-900 mb-4">Node Status</h4>
+                 <p className="text-[11px] text-indigo-700 font-medium leading-relaxed mb-8">Connection health to cloud database.</p>
+                 <button onClick={() => window.location.reload()} className="w-full bg-indigo-900 hover:bg-black text-white py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl transition-all flex items-center justify-center gap-3"><ShieldCheck size={16} /> Connection Verified</button>
               </div>
            </div>
         </div>
