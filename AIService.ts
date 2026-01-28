@@ -1,5 +1,5 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { PropertyFile, User, Transaction } from "./types";
 
 /**
@@ -35,7 +35,7 @@ export const generateSmartSummary = async (user: User, files: PropertyFile[]) =>
   `;
 
   try {
-    const response = await ai.models.generateContent({
+    const response: GenerateContentResponse = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: [{ parts: [{ text: prompt }] }],
     });
@@ -67,7 +67,7 @@ export const generateWhatsAppRecoveryMessage = async (file: PropertyFile) => {
   `;
 
   try {
-    const response = await ai.models.generateContent({
+    const response: GenerateContentResponse = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: [{ parts: [{ text: prompt }] }],
     });
@@ -79,11 +79,12 @@ export const generateWhatsAppRecoveryMessage = async (file: PropertyFile) => {
 
 /**
  * Streams chat responses with role-based system instructions.
+ * Uses gemini-3-pro-preview for complex auditing and financial reasoning tasks.
  */
 export async function* streamChatResponse(message: string, role: string, contextData: any[]) {
   const ai = getAI();
   const chat = ai.chats.create({
-    model: 'gemini-3-flash-preview',
+    model: 'gemini-3-pro-preview',
     config: {
       systemInstruction: `
         You are the DIN Properties Secure Registry Assistant.
@@ -115,9 +116,11 @@ export async function* streamChatResponse(message: string, role: string, context
   try {
     const result = await chat.sendMessageStream({ message });
     for await (const chunk of result) {
-      // Use cast to any to safely access the .text property of GenerateContentResponse
-      const c = chunk as any;
-      yield c.text;
+      // Correct extraction of text from streaming response chunk according to Google GenAI guidelines
+      const c = chunk as GenerateContentResponse;
+      if (c.text) {
+        yield c.text;
+      }
     }
   } catch (error) {
     console.error("Streaming Error:", error);

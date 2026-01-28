@@ -21,7 +21,9 @@ import {
   Loader2,
   AlertCircle,
   TriangleAlert,
-  History
+  History,
+  Filter,
+  CheckCircle
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -34,6 +36,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
   const [aiSummary, setAiSummary] = useState<string>('');
   const [isAiLoading, setIsAiLoading] = useState<boolean>(true);
   const [alertIndex, setAlertIndex] = useState(0);
+  const [filterMode, setFilterMode] = useState<'ALL' | 'CURRENT' | 'OVERDUE'>('ALL');
 
   const parseSAPDate = (dateStr: string) => {
     if (!dateStr || dateStr === '-' || dateStr === '' || dateStr === 'NULL') return null;
@@ -73,6 +76,44 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
     fetchSummary();
   }, [files, userName]);
 
+  // Explicitly typing fileOverdueData to fix the 'unknown' property access error during filtering
+  const fileOverdueData: Record<string, { isOverdue: boolean, overdueList: Transaction[], totalOverdue: number }> = useMemo(() => {
+    const today = new Date();
+    today.setHours(0,0,0,0);
+
+    return files.reduce((acc, file) => {
+      const overdueTrans = file.transactions
+        .filter(t => {
+          const d = parseSAPDate(t.duedate);
+          return d && d < today && (t.balduedeb || 0) > 0;
+        })
+        .sort((a, b) => {
+          const da = parseSAPDate(a.duedate);
+          const db = parseSAPDate(b.duedate);
+          return (da?.getTime() || 0) - (db?.getTime() || 0);
+        });
+      
+      acc[file.fileNo] = {
+        isOverdue: overdueTrans.length > 0,
+        overdueList: overdueTrans,
+        totalOverdue: overdueTrans.reduce((sum, t) => sum + (t.balduedeb || 0), 0)
+      };
+      return acc;
+    }, {} as Record<string, { isOverdue: boolean, overdueList: Transaction[], totalOverdue: number }>);
+  }, [files]);
+
+  const filteredFiles = useMemo(() => {
+    if (filterMode === 'ALL') return files;
+    return files.filter(f => {
+      const data = fileOverdueData[f.fileNo];
+      // Defensive check for indexed data access
+      if (!data) return false;
+      if (filterMode === 'OVERDUE') return data.isOverdue;
+      if (filterMode === 'CURRENT') return !data.isOverdue;
+      return true;
+    });
+  }, [files, filterMode, fileOverdueData]);
+
   const allAlerts = useMemo(() => {
     const alerts: { 
       overdueTransactions: Transaction[], 
@@ -87,30 +128,17 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
     today.setHours(0,0,0,0);
 
     files.forEach(file => {
-      // Identify ALL truly overdue installments
-      const overdueTrans = file.transactions
-        .filter(t => {
-          const d = parseSAPDate(t.duedate);
-          return d && d < today && (t.balduedeb || 0) > 0;
-        })
-        .sort((a, b) => {
-          const da = parseSAPDate(a.duedate);
-          const db = parseSAPDate(b.duedate);
-          return (da?.getTime() || 0) - (db?.getTime() || 0);
-        });
-
-      if (overdueTrans.length > 0) {
-        const totalAmount = overdueTrans.reduce((sum, t) => sum + (t.balduedeb || 0), 0);
+      const data = fileOverdueData[file.fileNo];
+      if (data && data.isOverdue) {
         alerts.push({ 
-          overdueTransactions: overdueTrans, 
-          totalOverdueAmount: totalAmount,
+          overdueTransactions: data.overdueList, 
+          totalOverdueAmount: data.totalOverdue,
           plotName: file.plotSize, 
           itemCode: file.fileNo, 
           file, 
           isOverdue: true 
         });
       } else {
-        // If nothing is overdue, find the next upcoming commitment
         const nextCommitment = file.transactions.find(t => {
            const d = parseSAPDate(t.duedate);
            return d && d >= today && (!t.amount_paid || t.amount_paid === 0) && (t.receivable && t.receivable > 0);
@@ -129,28 +157,21 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
       }
     });
 
-    // Prioritize overdue alerts at the top
     return alerts.sort((a, b) => (a.isOverdue === b.isOverdue ? 0 : a.isOverdue ? -1 : 1));
-  }, [files]);
+  }, [files, fileOverdueData]);
 
   const currentAlert = allAlerts[alertIndex];
 
   const getFileStatus = (file: PropertyFile) => {
-    const today = new Date();
-    today.setHours(0,0,0,0);
-    const hasOverdue = file.transactions.some(t => {
-      const d = parseSAPDate(t.duedate);
-      return d && d < today && (t.balduedeb || 0) > 0;
-    });
-
-    if (hasOverdue) return { label: 'Action Required', color: 'bg-rose-50 text-rose-600 border-rose-100' };
+    const data = fileOverdueData[file.fileNo];
+    if (data && data.isOverdue) return { label: 'Action Required', color: 'bg-rose-50 text-rose-600 border-rose-100' };
     if (file.balance > 0) return { label: 'Active Ledger', color: 'bg-blue-50 text-blue-600 border-blue-100' };
     return { label: 'Clearance Verified', color: 'bg-emerald-50 text-emerald-600 border-emerald-100' };
   };
 
   const stats = useMemo(() => {
     const activeRecordsCount = files.filter(f => f.balance > 0).length;
-    const overdueCount = allAlerts.filter(a => a.isOverdue).length;
+    const overdueCount = Object.values(fileOverdueData).filter(d => d.isOverdue).length;
     const transferCount = files.reduce((acc, f) => acc + f.transactions.filter(t => (t.u_intname || '').toUpperCase() === 'TRANSFER').length, 0);
 
     return [
@@ -160,16 +181,16 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
       { label: 'Transfers', value: transferCount.toString().padStart(2, '0'), icon: RefreshCcw, color: 'bg-purple-600' },
       { label: 'Alerts', value: overdueCount.toString().padStart(2, '0'), icon: AlertOctagon, color: 'bg-rose-600' },
     ];
-  }, [files, allAlerts]);
+  }, [files, fileOverdueData]);
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('en-PK', { style: 'currency', currency: 'PKR', maximumFractionDigits: 0 }).format(val);
   };
 
   const handleExportSummary = () => {
-    if (files.length === 0) return;
+    if (filteredFiles.length === 0) return;
     const headers = ['Item Code', 'Plot Description', 'Item Value', 'Paid To Date', 'OS Balance', 'Reg Date'];
-    const rows = files.map(f => [f.fileNo, f.plotSize, f.plotValue, f.paymentReceived, f.balance, f.regDate]);
+    const rows = filteredFiles.map(f => [f.fileNo, f.plotSize, f.plotValue, f.paymentReceived, f.balance, f.regDate]);
     const csvContent = [headers.join(','), ...rows.map(row => row.join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
@@ -208,18 +229,43 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
         <div className="xl:col-span-8 space-y-4">
-          <div className="flex items-center justify-between px-2 sm:px-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-2 sm:px-4">
             <h3 className="text-[10px] sm:text-[11px] font-black text-slate-900 uppercase tracking-[0.3em] flex items-center gap-3">
               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
               Asset Synchronization Unit
             </h3>
-            <button 
-              onClick={handleExportSummary}
-              disabled={files.length === 0}
-              className="px-3 py-2 sm:px-4 sm:py-2.5 bg-slate-900 text-white hover:bg-black rounded-xl text-[8px] sm:text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-2 disabled:opacity-20 shadow-lg shadow-slate-900/10"
-            >
-              <FileSpreadsheet size={14} /> <span className="hidden sm:inline">Global Export</span>
-            </button>
+            
+            <div className="flex items-center gap-3">
+              {/* Table Filters */}
+              <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 items-center">
+                <button 
+                  onClick={() => setFilterMode('ALL')}
+                  className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${filterMode === 'ALL' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                >
+                  All
+                </button>
+                <button 
+                  onClick={() => setFilterMode('CURRENT')}
+                  className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${filterMode === 'CURRENT' ? 'bg-emerald-600 text-white shadow-sm' : 'text-emerald-500/60 hover:text-emerald-600'}`}
+                >
+                  <CheckCircle size={10} /> Current
+                </button>
+                <button 
+                  onClick={() => setFilterMode('OVERDUE')}
+                  className={`px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1.5 ${filterMode === 'OVERDUE' ? 'bg-rose-600 text-white shadow-sm' : 'text-rose-500/60 hover:text-rose-600'}`}
+                >
+                  <AlertCircle size={10} /> Overdue
+                </button>
+              </div>
+
+              <button 
+                onClick={handleExportSummary}
+                disabled={filteredFiles.length === 0}
+                className="px-3 py-2 sm:px-4 sm:py-2.5 bg-slate-900 text-white hover:bg-black rounded-xl text-[8px] sm:text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-2 disabled:opacity-20 shadow-lg shadow-slate-900/10"
+              >
+                <FileSpreadsheet size={14} /> <span className="hidden sm:inline">Export List</span>
+              </button>
+            </div>
           </div>
           
           <div className="bg-white rounded-[3rem] shadow-2xl shadow-slate-200/40 border border-slate-200 overflow-hidden">
@@ -235,19 +281,13 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {files.map((file) => {
+                  {filteredFiles.map((file) => {
                     const status = getFileStatus(file);
+                    const data = fileOverdueData[file.fileNo];
                     const today = new Date();
                     today.setHours(0,0,0,0);
                     
-                    const overdueList = file.transactions.filter(t => {
-                      const d = parseSAPDate(t.duedate);
-                      return d && d < today && (t.balduedeb || 0) > 0;
-                    });
-
-                    const totalOverdue = overdueList.reduce((sum, t) => sum + (t.balduedeb || 0), 0);
                     const nextUpcoming = file.transactions.find(t => (!t.amount_paid || t.amount_paid === 0) && (t.receivable && t.receivable > 0) && (parseSAPDate(t.duedate)?.getTime() || 0) >= today.getTime());
-                    
                     const recoveryPercent = file.plotValue > 0 ? Math.round((file.paymentReceived / file.plotValue) * 100) : 0;
                     
                     return (
@@ -259,11 +299,11 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
                           </div>
                         </td>
                         <td className="px-10 py-8">
-                          {overdueList.length > 0 ? (
+                          {data && data.isOverdue ? (
                             <div>
-                              <div className="text-xs font-black text-rose-600">{formatCurrency(totalOverdue)}</div>
+                              <div className="text-xs font-black text-rose-600">{formatCurrency(data.totalOverdue)}</div>
                               <div className="text-[9px] font-black uppercase text-rose-400 mt-1 flex items-center gap-1.5">
-                                <TriangleAlert size={10} /> {overdueList.length} INSTALLMENTS MISSED
+                                <TriangleAlert size={10} /> {data.overdueList.length} INSTALLMENTS MISSED
                               </div>
                             </div>
                           ) : nextUpcoming ? (
@@ -286,7 +326,7 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
                           </div>
                           <div className="w-40 h-1.5 bg-slate-100 rounded-full overflow-hidden">
                             <div 
-                              className={`h-full rounded-full transition-all duration-1000 ${recoveryPercent > 70 ? 'bg-emerald-500' : 'bg-blue-600'}`} 
+                              className={`h-full rounded-full transition-all duration-1000 ${(data && data.isOverdue) ? 'bg-rose-500' : 'bg-emerald-500'}`} 
                               style={{ width: `${recoveryPercent}%` }}
                             ></div>
                           </div>
@@ -309,26 +349,27 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
                   })}
                 </tbody>
               </table>
+              {filteredFiles.length === 0 && (
+                <div className="py-20 text-center flex flex-col items-center">
+                  <Filter size={40} className="text-slate-200 mb-4" />
+                  <p className="text-slate-400 font-black uppercase tracking-widest text-[10px]">No records match your filter: {filterMode}</p>
+                </div>
+              )}
             </div>
 
             {/* Mobile View Table */}
             <div className="lg:hidden p-4 sm:p-6 space-y-4">
-              {files.map((file) => {
+              {filteredFiles.map((file) => {
                 const status = getFileStatus(file);
+                const data = fileOverdueData[file.fileNo];
                 const today = new Date();
                 today.setHours(0,0,0,0);
                 
-                const overdueList = file.transactions.filter(t => {
-                  const d = parseSAPDate(t.duedate);
-                  return d && d < today && (t.balduedeb || 0) > 0;
-                });
-                const totalOverdue = overdueList.reduce((sum, t) => sum + (t.balduedeb || 0), 0);
                 const nextUpcoming = file.transactions.find(t => (!t.amount_paid || t.amount_paid === 0) && (t.receivable && t.receivable > 0) && (parseSAPDate(t.duedate)?.getTime() || 0) >= today.getTime());
-
                 const recoveryPercent = file.plotValue > 0 ? Math.round((file.paymentReceived / file.plotValue) * 100) : 0;
 
                 return (
-                  <div key={file.fileNo} className="bg-slate-50/50 rounded-3xl p-6 border border-slate-200/60 shadow-sm">
+                  <div key={file.fileNo} className={`rounded-3xl p-6 border shadow-sm transition-colors ${(data && data.isOverdue) ? 'bg-rose-50/30 border-rose-100' : 'bg-slate-50/50 border-slate-200/60'}`}>
                     <div className="flex justify-between items-start mb-6">
                       <div className="max-w-[70%]">
                         <div className="text-[11px] font-black text-slate-900 uppercase tracking-tight">{file.plotSize}</div>
@@ -341,9 +382,9 @@ const Dashboard: React.FC<DashboardProps> = ({ onSelectFile, files, userName }) 
 
                     <div className="grid grid-cols-2 gap-6 mb-6">
                       <div>
-                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{overdueList.length > 0 ? 'Total Overdue' : 'Target Inbound'}</p>
-                        <p className={`text-xs font-black mt-1 ${overdueList.length > 0 ? 'text-rose-600' : 'text-slate-900'}`}>{overdueList.length > 0 ? formatCurrency(totalOverdue) : nextUpcoming ? formatCurrency(nextUpcoming.receivable || 0) : 'Registry Clear'}</p>
-                        {overdueList.length > 0 && <p className="text-[8px] font-black text-rose-400 uppercase mt-0.5">{overdueList.length} Missed</p>}
+                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{(data && data.isOverdue) ? 'Total Overdue' : 'Target Inbound'}</p>
+                        <p className={`text-xs font-black mt-1 ${(data && data.isOverdue) ? 'text-rose-600' : 'text-slate-900'}`}>{(data && data.isOverdue) ? formatCurrency(data.totalOverdue) : nextUpcoming ? formatCurrency(nextUpcoming.receivable || 0) : 'Registry Clear'}</p>
+                        {(data && data.isOverdue) && <p className="text-[8px] font-black text-rose-400 uppercase mt-0.5">{data.overdueList.length} Missed</p>}
                       </div>
                       <div>
                         <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">Secured Ratio</p>
