@@ -17,7 +17,9 @@ import {
   HelpCircle,
   AlertTriangle,
   KeyRound,
-  ShieldEllipsis
+  ShieldEllipsis,
+  RefreshCw,
+  ArrowLeft
 } from 'lucide-react';
 
 interface LoginProps {
@@ -31,10 +33,13 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [success, setSuccess] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   
-  // Auth Phases
-  const [mode, setMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
+  // Auth Modes: LOGIN, REGISTER, RECOVER
+  const [mode, setMode] = useState<'LOGIN' | 'REGISTER' | 'RECOVER'>('LOGIN');
+  
+  // Internal Steps
   const [loginStep, setLoginStep] = useState<'CREDENTIALS' | 'CHALLENGE'>('CREDENTIALS');
   const [regStep, setRegStep] = useState<'FORM' | 'VERIFY'>('FORM');
+  const [recoverStep, setRecoverStep] = useState<'EMAIL' | 'RESET'>('EMAIL');
 
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [targetEmail, setTargetEmail] = useState('');
@@ -50,6 +55,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [regPhone, setRegPhone] = useState('');
   const [regPassword, setRegPassword] = useState('');
 
+  const [newPassword, setNewPassword] = useState('');
+
   const handleOtpChange = (value: string, index: number) => {
     if (!/^\d*$/.test(value)) return;
     const newOtp = [...otp];
@@ -62,8 +69,18 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     if (e.key === 'Backspace' && !otp[index] && index > 0) otpInputs.current[index - 1]?.focus();
   };
 
+  const resetAllStates = () => {
+    setError('');
+    setSuccess('');
+    setIsLoading(false);
+    setOtp(['', '', '', '', '', '']);
+    setLoginStep('CREDENTIALS');
+    setRegStep('FORM');
+    setRecoverStep('EMAIL');
+  };
+
   /**
-   * PHASE 2: Verification (Registration OTP or Login 2FA OTP)
+   * VERIFICATION HANDLERS (OTP)
    */
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,37 +91,51 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     setError('');
 
     try {
-      const { data, error: authError } = await authProvider.verifyOTP(
-        targetEmail, 
-        token, 
-        mode === 'REGISTER' ? 'signup' : 'email'
-      );
-      
-      if (authError) throw authError;
+      if (mode === 'RECOVER') {
+        const { error: verifyError } = await authProvider.verifyResetOTP(targetEmail, token);
+        if (verifyError) throw verifyError;
 
-      if (data.user) {
-        if (mode === 'REGISTER') {
-          await authProvider.upsertProfile({
+        const { error: updateError } = await authProvider.updatePassword(newPassword);
+        if (updateError) throw updateError;
+
+        setSuccess('Security clearance granted. Your password has been successfully updated.');
+        setTimeout(() => {
+          setMode('LOGIN');
+          resetAllStates();
+        }, 2000);
+      } else {
+        const { data, error: authError } = await authProvider.verifyOTP(
+          targetEmail, 
+          token, 
+          mode === 'REGISTER' ? 'signup' : 'email'
+        );
+        
+        if (authError) throw authError;
+
+        if (data.user) {
+          if (mode === 'REGISTER') {
+            await authProvider.upsertProfile({
+              id: data.user.id,
+              name: regName,
+              cnic: regCnic,
+              phone: regPhone,
+              email: regEmail,
+              role: 'CLIENT'
+            });
+          }
+
+          const profile = data.user.user_metadata;
+          const finalUser: User = {
             id: data.user.id,
-            name: regName,
-            cnic: regCnic,
-            phone: regPhone,
-            email: regEmail,
-            role: 'CLIENT'
-          });
+            name: profile?.name || regName || data.user.email?.split('@')[0] || 'Member',
+            email: data.user.email || targetEmail,
+            cnic: profile?.cnic || regCnic || 'VERIFIED',
+            phone: profile?.phone || regPhone || '',
+            role: (profile?.role as any) || 'CLIENT',
+            status: 'Active'
+          };
+          onLogin(finalUser);
         }
-
-        const profile = data.user.user_metadata;
-        const finalUser: User = {
-          id: data.user.id,
-          name: profile?.name || regName || data.user.email?.split('@')[0] || 'Member',
-          email: data.user.email || targetEmail,
-          cnic: profile?.cnic || regCnic || 'VERIFIED',
-          phone: profile?.phone || regPhone || '',
-          role: (profile?.role as any) || 'CLIENT',
-          status: 'Active'
-        };
-        onLogin(finalUser);
       }
     } catch (err: any) {
       setError(err.message || 'Identity verification failed. Invalid code.');
@@ -114,7 +145,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   };
 
   /**
-   * PHASE 1: Form Submission
+   * PHASE 1: Submission
    */
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,16 +163,23 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
         setTargetEmail(loginEmail);
         setLoginStep('CHALLENGE');
-        setSuccess('Step 1 Verified. A 6-digit security challenge has been sent to your email.');
-      } else {
-        // DUPLICATE IDENTITY PREVENTION
+        setSuccess('Credentials verified. A 6-digit challenge has been dispatched to your email.');
+      } 
+      else if (mode === 'RECOVER') {
+        const { error: resetError } = await authProvider.resetPasswordForEmail(targetEmail);
+        if (resetError) throw resetError;
+        setRecoverStep('RESET');
+        setSuccess('Recovery link and OTP challenge dispatched to your email.');
+      }
+      else {
+        // REGISTER
         const { data: existing, error: checkError } = await authProvider.checkIdentityExists(regCnic, regEmail);
         if (existing) {
           if (existing.cnic_normalized === normalizeCNIC(regCnic)) {
-            throw new Error(`The CNIC ${regCnic} is already registered. If this is you, please login.`);
+            throw new Error(`The CNIC ${regCnic} is already registered.`);
           }
           if (existing.email.toLowerCase() === regEmail.toLowerCase()) {
-            throw new Error(`The email address ${regEmail} is already in use. Please use a different email or login.`);
+            throw new Error(`The email address ${regEmail} is already in use.`);
           }
         }
 
@@ -156,10 +194,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
         setTargetEmail(regEmail);
         setRegStep('VERIFY');
-        setSuccess(`Registration initiated. Enter the code sent to ${regEmail} to link your CNIC.`);
+        setSuccess(`Registration initiated. Verification code sent to ${regEmail}.`);
       }
     } catch (err: any) {
-      setError(err.message || 'Authentication error. Please check your credentials.');
+      setError(err.message || 'Authentication sequence failed.');
     } finally {
       setIsLoading(false);
     }
@@ -177,7 +215,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       <path fill="#0c0b0b" d="M53.88,99.41c.09-.89.3-1.96.34-2.84.33-7.13.22-14.36,0-21.49-.07-2.22.1-4.44-.34-6.63,7.19.37,16.1-1.92,20.33,5.56,2.88,5.08,2.98,14.37.17,19.49-4.21,7.67-13.19,5.63-20.5,5.9ZM59.73,94.77h4.56c7.61,0,7.71-13.12,5.37-17.92-.77-1.58-2.83-3.58-4.68-3.58h-5.25v21.5Z"/>
       <path fill="#0aa98f" d="M44.07,105.43c-4.6,1.67-9.06,2.57-13.94,1.64-8.71-1.66-15.07-8.8-21.5-14.28-1.25-1.07-3.02-2.18-4.13-3.26-.18-.18-.4-.3-.34-.6,4.34-1.7,8.64-2.59,13.28-1.67,8.12,1.6,14.37,8.73,20.53,13.7,1.97,1.59,4.02,3.05,6.1,4.47Z"/>
       <path fill="#0c0b0b" d="M148.35,99.41c3-9.01,6.47-17.92,8.93-27.1.16-.6.67-3.54.78-3.69.27-.39,6.61-.03,7.56-.17,2.93,10.47,6.3,20.85,10.26,30.97h-6.37c.02-1.39-.36-2.95-.81-4.26-.19-.55-.27-1.45-.98-1.43l-11.68.04c-.25.08-.28.29-.37.49-.69,1.47-.69,3.7-1.38,5.16h-5.94ZM157.29,89.26h9.46l-4.91-14.1-4.56,14.1Z"/>
-      <path fill="#0c0b0b" d="M244.53,86.68c-3.64-.57-7.34-.27-11.01-.34l.17,8.08c2.9-.15,5.8.23,8.7.18.41,0,.78-.17,1.19-.19,1.7-.09,3.24.12,4.91-.51l-.52,5.84-20.48-.6c.1-1.03.31-2.25.35-3.27.25-6.31.16-12.61,0-18.91-.07-2.85.09-5.69-.34-8.52l19.63-.27.5,5.77c-1.2-.47-2.57-.62-3.86-.69-3.34-.18-6.74.1-10.07.18l-.17,8.08c3.67-.09,7.38.26,11.01-.34v5.5Z"/>
+      <path fill="#0c0b0b" d="M244.53,86.68c-3.64-.57-7.34-.27-11.01-.34v5.5l.17,8.08c2.9-.15,5.8.23,8.7.18.41,0,.78-.17,1.19-.19,1.7-.09,3.24.12,4.91-.51l-.52,5.84-20.48-.6c.1-1.03.31-2.25.35-3.27.25-6.31.16-12.61,0-18.91-.07-2.85.09-5.69-.34-8.52l19.63-.27.5,5.77c-1.2-.47-2.57-.62-3.86-.69-3.34-.18-6.74.1-10.07.18l-.17,8.08c3.67-.09,7.38.26,11.01-.34v5.5Z"/>
       <path fill="#0c0b0b" d="M144.56,75.68c-6.48-5.9-12.65-1.98-13.25,6.11-.52,7.01,1.13,16.32,10.47,12.79-.1-4.51.37-9.11-.32-13.56h5.51v18.4c-.92-.11-2.11-.32-3.01-.34-4.7-.13-8.27,2.91-13.15-.79-7.21-5.48-6.95-24.38,1.31-28.93,4.27-2.35,7.44-1.51,11.75-.28.33.09.81.02,1.05.16.38.22-.35,1.69-.35,2.07v4.39Z"/>
       <path fill="#6e6f72" d="M5.01,31.99l6.28,3.95c.58.38,3.74,2.38,3.84,2.7l.04,25.6-.18.5c-3.7,2.41-6.93,5.64-9.04,9.54l-.94,2.07V31.99Z"/>
       <path fill="#0c0b0b" d="M294.94,69.66c-.06,2.19-.14,4.33,0,6.53-.3.08-.34-.12-.52-.26-2.86-2.21-4.42-3.32-8.35-3.02-2.45.19-7.16,2.07-5.21,5.22,1.36,2.2,7.74,3.83,10.24,5.24,8.54,4.85,5.61,14.97-3.52,16.49-4.02.67-7.96-.22-11.92-.89l-.16-6.46c3.11,2.35,7.41,3.14,11.18,2.15,3.52-.93,5.2-4.22,1.78-6.59-3.12-2.16-7.36-2.75-10.38-5.28-5.45-4.56-3.08-12.15,3.35-14.2,4.76-1.51,8.92-.22,13.51,1.04Z"/>
@@ -186,7 +224,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     </svg>
   );
 
-  const isChallengePhase = (mode === 'LOGIN' && loginStep === 'CHALLENGE') || (mode === 'REGISTER' && regStep === 'VERIFY');
+  const isOTPPhase = (mode === 'LOGIN' && loginStep === 'CHALLENGE') || (mode === 'REGISTER' && regStep === 'VERIFY') || (mode === 'RECOVER' && recoverStep === 'RESET');
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-900 p-4 relative overflow-hidden font-sans text-slate-900">
@@ -195,15 +233,17 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         <div className="absolute bottom-[-10%] left-[-10%] w-[60%] h-[60%] bg-blue-500 blur-[150px] rounded-full"></div>
       </div>
 
-      <div className={`w-full ${mode === 'REGISTER' && !isChallengePhase ? 'max-w-2xl' : 'max-w-md'} z-10 space-y-4 transition-all duration-500`}>
+      <div className={`w-full ${mode === 'REGISTER' && !isOTPPhase ? 'max-w-2xl' : 'max-w-md'} z-10 space-y-4 transition-all duration-500`}>
         <div className="bg-white rounded-[2.5rem] shadow-2xl overflow-hidden border border-slate-200">
           <div className="p-8 bg-white border-b border-slate-100 flex flex-col items-center text-center">
              <div className="mb-6"><Logo /></div>
              <h1 className="text-2xl font-black tracking-tighter text-slate-900 uppercase">
-                {isChallengePhase ? 'SECURITY CHALLENGE' : (mode === 'LOGIN' ? 'CUSTOMER PORTAL' : 'IDENTITY REGISTRATION')}
+                {isOTPPhase ? 'SECURITY CHALLENGE' : 
+                 mode === 'LOGIN' ? 'CUSTOMER PORTAL' : 
+                 mode === 'RECOVER' ? 'PASSWORD RECOVERY' : 'IDENTITY REGISTRATION'}
              </h1>
              <p className="text-slate-500 mt-1 text-[10px] font-black uppercase tracking-[0.2em]">
-               {isChallengePhase ? `AUTHENTICATION CODE SENT TO EMAIL` : 'DIN Properties Secure Asset Terminal'}
+               {isOTPPhase ? `AUTHENTICATION CODE SENT TO EMAIL` : 'DIN Properties Secure Asset Terminal'}
              </p>
           </div>
 
@@ -222,12 +262,12 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               </div>
             )}
 
-            {!isChallengePhase ? (
+            {!isOTPPhase ? (
               <form onSubmit={handleAuthSubmit} className="space-y-6">
-                {mode === 'LOGIN' ? (
+                {mode === 'LOGIN' && (
                   <>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-1">Access Email</label>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Access Email</label>
                       <div className="relative">
                         <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
@@ -241,7 +281,16 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                       </div>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-1">Security Key</label>
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Security Key</label>
+                        <button 
+                          type="button" 
+                          onClick={() => { setMode('RECOVER'); resetAllStates(); }} 
+                          className="text-[9px] font-black text-emerald-600 hover:underline uppercase tracking-widest"
+                        >
+                          Forgot Key?
+                        </button>
+                      </div>
                       <div className="relative">
                         <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
@@ -250,15 +299,34 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                           placeholder="••••••••"
                           className="w-full pl-12 pr-6 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-sm font-medium transition-all focus:ring-4 focus:ring-slate-900/5"
                           value={loginPassword}
-                          onChange={(e) => loginPassword.length < 50 ? setLoginPassword(e.target.value) : null}
+                          onChange={(e) => setLoginPassword(e.target.value)}
                         />
                       </div>
                     </div>
                   </>
-                ) : (
+                )}
+
+                {mode === 'RECOVER' && (
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Registered Email</label>
+                    <div className="relative">
+                      <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <input
+                        type="email"
+                        required
+                        placeholder="your@email.com"
+                        className="w-full pl-12 pr-6 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-sm font-medium transition-all focus:ring-4 focus:ring-slate-900/5"
+                        value={targetEmail}
+                        onChange={(e) => setTargetEmail(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {mode === 'REGISTER' && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-1.5 md:col-span-2">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-1">Full Name</label>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Full Name</label>
                       <div className="relative">
                         <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
@@ -272,13 +340,13 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                       </div>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-1"> CNIC</label>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1"> CNIC</label>
                       <div className="relative">
                         <Fingerprint className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
                           type="text"
                           required
-                          placeholder="33102-0606078-6"
+                          placeholder="33102-XXXXXXX-X"
                           className="w-full pl-12 pr-6 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-sm font-black tracking-widest"
                           value={regCnic}
                           onChange={(e) => setRegCnic(e.target.value)}
@@ -286,7 +354,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                       </div>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-1">Phone Number</label>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Phone Number</label>
                       <div className="relative">
                         <Phone className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
@@ -300,7 +368,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                       </div>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-1">Email Address</label>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Email Address</label>
                       <div className="relative">
                         <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
@@ -314,7 +382,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                       </div>
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] px-1">Set Password</label>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Set Password</label>
                       <div className="relative">
                         <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
@@ -339,23 +407,32 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                     <Loader2 className="animate-spin" size={18} />
                   ) : (
                     <>
-                      {mode === 'LOGIN' ? 'Verify Credentials' : 'Initialize Identity'}
+                      {mode === 'LOGIN' ? 'Verify Credentials' : mode === 'RECOVER' ? 'Send OTP Recovery' : 'Initialize Identity'}
                       <ArrowRight size={18} />
                     </>
                   )}
                 </button>
 
-                <div className="pt-6 border-t border-slate-100 text-center">
+                <div className="pt-6 border-t border-slate-100 text-center space-y-4">
                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
                     {mode === 'LOGIN' ? 'New Member?' : 'Already Synchronized?'} 
                     <button 
                       type="button" 
-                      onClick={() => { setMode(mode === 'LOGIN' ? 'REGISTER' : 'LOGIN'); setError(''); setSuccess(''); }} 
+                      onClick={() => { setMode(mode === 'LOGIN' ? 'REGISTER' : 'LOGIN'); resetAllStates(); }} 
                       className="ml-2 text-emerald-600 font-black hover:underline"
                     >
                       {mode === 'LOGIN' ? 'SIGN UP' : 'LOGIN'}
                     </button>
                   </p>
+                  {mode === 'RECOVER' && (
+                    <button 
+                      type="button" 
+                      onClick={() => { setMode('LOGIN'); resetAllStates(); }} 
+                      className="text-[10px] font-black text-slate-400 hover:text-slate-900 uppercase tracking-widest flex items-center justify-center gap-2 mx-auto"
+                    >
+                      <ArrowLeft size={14} /> Back to Entry
+                    </button>
+                  )}
                 </div>
               </form>
             ) : (
@@ -375,23 +452,40 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                     />
                   ))}
                 </div>
+
+                {mode === 'RECOVER' && (
+                  <div className="space-y-1.5 px-2">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">New Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <input
+                        type="password"
+                        required
+                        placeholder="••••••••"
+                        className="w-full pl-12 pr-6 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-sm font-medium"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
                 
                 <div className="space-y-4">
                   <button
                     type="submit"
-                    disabled={isLoading || otp.some(d => !d)}
+                    disabled={isLoading || otp.some(d => !d) || (mode === 'RECOVER' && !newPassword)}
                     className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-4 rounded-3xl transition-all shadow-2xl uppercase tracking-[0.2em] text-xs flex items-center justify-center gap-3"
                   >
-                    {isLoading ? <Loader2 className="animate-spin" size={18} /> : <ShieldCheck size={18} />}
-                    Complete Verification
+                    {isLoading ? <Loader2 className="animate-spin" size={18} /> : mode === 'RECOVER' ? <RefreshCw size={18} /> : <ShieldCheck size={18} />}
+                    {mode === 'RECOVER' ? 'Reset Security Key' : 'Complete Verification'}
                   </button>
                   <div className="text-center pt-2">
                      <button
                         type="button"
-                        onClick={() => { setLoginStep('CREDENTIALS'); setRegStep('FORM'); setOtp(['','','','','','']); setError(''); }}
+                        onClick={() => { resetAllStates(); }}
                         className="text-slate-400 font-black text-[10px] uppercase tracking-widest hover:text-slate-600 transition-all flex items-center justify-center gap-2 mx-auto"
                       >
-                        <ShieldEllipsis size={14} /> Reset Sequence
+                        <ShieldEllipsis size={14} /> Abort Sequence
                       </button>
                   </div>
                 </div>
@@ -399,7 +493,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 <div className="p-6 bg-slate-50 border border-slate-100 rounded-[2rem] flex items-start gap-3">
                   <KeyRound size={18} className="text-slate-400 shrink-0 mt-0.5" />
                   <p className="text-[9px] text-slate-500 font-bold leading-relaxed uppercase">
-                    Security Policy: The code is valid for 10 minutes. Check your Junk or Spam folder if not received.
+                    Security Policy: Reset code expires in 10 minutes. Ensure the new key follows local complexity requirements.
                   </p>
                 </div>
               </form>

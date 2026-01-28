@@ -61,7 +61,6 @@ const mapToDB = (f: PropertyFile): any => ({
   father_name: f.fatherName,
   cell_no: f.cellNo,
   address: f.address,
-  // Fix: Access plotNo instead of non-existent plot_no on PropertyFile
   plot_no: f.plotNo,
   block: f.block,
   park: f.park,
@@ -104,7 +103,25 @@ export const authProvider = {
     });
   },
 
-  verifyOTP: async (email: string, token: string, type: 'email' | 'signup' = 'email') => {
+  resetPasswordForEmail: async (email: string) => {
+    return await supabase.auth.resetPasswordForEmail(email);
+  },
+
+  verifyResetOTP: async (email: string, token: string) => {
+    return await supabase.auth.verifyOtp({
+      email,
+      token,
+      type: 'recovery',
+    });
+  },
+
+  updatePassword: async (password: string) => {
+    return await supabase.auth.updateUser({
+      password: password
+    });
+  },
+
+  verifyOTP: async (email: string, token: string, type: 'email' | 'signup' | 'recovery' = 'email') => {
     const { data, error } = await supabase.auth.verifyOtp({
       email,
       token,
