@@ -19,7 +19,8 @@ import {
   KeyRound,
   ShieldEllipsis,
   RefreshCw,
-  ArrowLeft
+  ArrowLeft,
+  Contact2
 } from 'lucide-react';
 
 interface LoginProps {
@@ -46,7 +47,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const otpInputs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Form states
-  const [loginEmail, setLoginEmail] = useState('');
+  const [loginIdentity, setLoginIdentity] = useState(''); // Hybrid field: Email or CNIC
   const [loginPassword, setLoginPassword] = useState('');
 
   const [regName, setRegName] = useState('');
@@ -155,13 +156,26 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
     try {
       if (mode === 'LOGIN') {
-        const { data: signInData, error: loginError } = await authProvider.signIn(loginEmail, loginPassword);
+        let finalEmail = loginIdentity.trim();
+        
+        // Hybrid Login Logic: Check if input is a CNIC instead of Email
+        const isEmail = finalEmail.includes('@');
+        if (!isEmail) {
+          const { data: profile, error: cnicError } = await authProvider.checkCnicExists(finalEmail);
+          if (cnicError || !profile?.email) {
+            throw new Error('Identity not found. Please verify your CNIC number or use your Email.');
+          }
+          finalEmail = profile.email;
+        }
+
+        const { data: signInData, error: loginError } = await authProvider.signIn(finalEmail, loginPassword);
         if (loginError) throw loginError;
 
-        const { error: otpError } = await authProvider.sendLoginChallenge(loginEmail);
+        // Trigger OTP Challenge after password verification
+        const { error: otpError } = await authProvider.sendLoginChallenge(finalEmail);
         if (otpError) throw otpError;
 
-        setTargetEmail(loginEmail);
+        setTargetEmail(finalEmail);
         setLoginStep('CHALLENGE');
         setSuccess('Credentials verified. A 6-digit challenge has been dispatched to your email.');
       } 
@@ -267,16 +281,16 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 {mode === 'LOGIN' && (
                   <>
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Access Email</label>
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] px-1">Identity Access (Email or CNIC)</label>
                       <div className="relative">
-                        <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <Contact2 className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                         <input
-                          type="email"
+                          type="text"
                           required
-                          placeholder="your@email.com"
+                          placeholder="your@email.com or 33100-XXXXXXX-X"
                           className="w-full pl-12 pr-6 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-sm font-medium transition-all focus:ring-4 focus:ring-slate-900/5"
-                          value={loginEmail}
-                          onChange={(e) => setLoginEmail(e.target.value)}
+                          value={loginIdentity}
+                          onChange={(e) => setLoginIdentity(e.target.value)}
                         />
                       </div>
                     </div>
